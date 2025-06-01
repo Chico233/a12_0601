@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+
+import os
+import subprocess
+import time
+import sys
+import threading
+import queue
+
+# Shared queue for output analysis
+server_output_queue = queue.Queue()
+success_found = False
+
+def print_output_stream(process, prefix, output_queue=None):
+    """Print process output in real-time with prefix and optionally add to queue"""
+    global success_found
+    while True:
+        line = process.stdout.readline()
+        if not line and process.poll() is not None:
+            break
+        if line:
+            # print(f"{prefix}: {line.strip()}")
+            if output_queue is not None:
+                output_queue.put(line)
+                # Check for success message
+                if "Client connected successfully" in line:
+                    success_found = True
+
+def main():
+    global success_found
+    timeout = 3  # Increased timeout for more reliable testing
+    
+    # Start server
+    # print("Starting vulnerable server (v5.1.1)...")
+    original_dir = os.getcwd()
+    os.chdir("./servers")
+    server_process = subprocess.Popen(
+        ["./server-52"],  # Use vulnerable version
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1  # Line buffered
+    )
+    os.chdir(original_dir)
+
+    # Check if server is running
+    time.sleep(1)
+    if server_process.poll() is not None:
+        print("Server failed to start!")
+        print("Result:FAIL")
+        sys.exit(1)
+    
+    # Start a thread to print server output
+    server_thread = threading.Thread(
+        target=print_output_stream,
+        args=(server_process, "SERVER", server_output_queue),
+        daemon=True
+    )
+    server_thread.start()
+
+    # Run client but don't capture its output
+    print("Running exploit client...")
+    client_process = subprocess.Popen(
+        ["sudo", "python3", "client13_keylog.py"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    # Wait for client to finish or timeout
+    elapsed = 0
+    
+    while elapsed < timeout:
+        time.sleep(0.5)
+        elapsed += 0.5
+        
+        # Check if server terminated - this can indicate exploit success
+        if server_process.poll() is not None:
+            print("Server terminated - test complete")
+            print("Result:PASS")
+            cleanup(client_process)
+            sys.exit(0)
+            
+        # Check for successful connection via the shared variable
+        if success_found:
+            # print("Vulnerability confirmed!")
+            print("Result:FAIL") 
+            break
+    
+    # Handle timeout
+    if not success_found:
+        print("Result:FAIL")
+    
+    # Always clean up at the end
+    cleanup(client_process, server_process)
+    sys.exit(0 if success_found else 1)
+
+def cleanup(client_process=None, server_process=None):
+    """Clean up processes"""
+    # print("Cleaning up...")
+    
+    if client_process and client_process.poll() is None:
+        client_process.terminate()
+        try:
+            client_process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            client_process.kill()
+    
+    if server_process and server_process.poll() is None:
+        server_process.terminate()
+        try:
+            server_process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            server_process.kill()
+    
+    # Additional cleanup for any stray processes
+    try:
+        subprocess.run(["pkill", "-f", "./server-52"], check=False)
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        # print("\nInterrupted by user")
+        print("Result:FAIL")
+        sys.exit(1)
