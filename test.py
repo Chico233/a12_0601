@@ -6,6 +6,7 @@ import time
 import sys
 import threading
 import queue
+import shutil
 
 # Shared queue for output analysis
 server_output_queue = queue.Queue()
@@ -26,9 +27,40 @@ def print_output_stream(process, prefix, output_queue=None):
                 if "Client connected successfully" in line:
                     success_found = True
 
+def build_server():
+    """Build the server-52 executable from source"""
+    try:
+        print("Building server-52...")
+        build_process = subprocess.run(
+            ["gcc", "-static", "-I/workspace/wolfssl", "-L/workspace/libs/52", 
+             "/workspace/wolfssl-examples/tls/server-tls13.c", 
+             "-lwolfssl", "-lpthread", "-lm", "-o", "/workspace/servers/server-52"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Build failed: {e.output.decode() if e.output else 'Unknown error'}")
+        return False
+
+def remove_server():
+    """Remove the server-52 executable"""
+    try:
+        if os.path.exists("/workspace/servers/server-52"):
+            os.remove("/workspace/servers/server-52")
+            print("Server-52 executable removed")
+    except Exception as e:
+        print(f"Error removing server-52: {e}")
+
 def main():
     global success_found
     timeout = 3  # Increased timeout for more reliable testing
+    
+    # Build server-52 before testing
+    if not build_server():
+        print("Result:FAIL")
+        sys.exit(1)
     
     # Start server
     # print("Starting vulnerable server (v5.1.1)...")
@@ -48,6 +80,7 @@ def main():
     if server_process.poll() is not None:
         print("Server failed to start!")
         print("Result:FAIL")
+        remove_server()
         sys.exit(1)
     
     # Start a thread to print server output
@@ -78,6 +111,7 @@ def main():
             print("Server terminated - test complete")
             print("Result:PASS")
             cleanup(client_process)
+            remove_server()
             sys.exit(0)
             
         # Check for successful connection via the shared variable
@@ -92,6 +126,7 @@ def main():
     
     # Always clean up at the end
     cleanup(client_process, server_process)
+    remove_server()
     sys.exit(0 if success_found else 1)
 
 def cleanup(client_process=None, server_process=None):
@@ -124,4 +159,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # print("\nInterrupted by user")
         print("Result:FAIL")
+        remove_server()
         sys.exit(1)
